@@ -114,6 +114,9 @@ class TestIsPathInside(unittest.TestCase):
     def test_case_insensitive(self):
         self.assertTrue(is_path_inside("C:\\USERS\\test", "c:\\users"))
 
+    def test_drive_root_parent(self):
+        self.assertTrue(is_path_inside("C:\\Users", "C:\\"))
+
 
 class TestIsProtectedPath(unittest.TestCase):
     def test_windows_is_protected(self):
@@ -1101,11 +1104,7 @@ class TestGetProtectedPaths(unittest.TestCase):
 class TestNormalizePathBug(unittest.TestCase):
     def test_root_path_strips_separator_bug(self):
         result = normalize_path("C:\\")
-        self.assertTrue(
-            result.endswith("\\") or result.endswith(":"),
-            f"normalize_path('C:\\\\') returned '{result}', "
-            f"which may cause path comparison issues for root paths",
-        )
+        self.assertTrue(result.endswith("\\"))
 
     def test_root_path_comparison_bug(self):
         root = normalize_path("C:\\")
@@ -1153,6 +1152,24 @@ class TestCollectOldEntriesDirectorySizeBug(unittest.TestCase, SafeTestDirMixin)
                 0,
                 f"Directory '{dt['name']}' should have recursive size > 0 after fix",
             )
+
+    def test_directory_target_size_excludes_newer_files(self):
+        old_root = self.safe_temp_dir(prefix="cclear-mixedsize-")
+        sub = old_root / "subdir"
+        sub.mkdir()
+        (sub / "old.txt").write_bytes(b"x" * 5000)
+        (sub / "new.txt").write_bytes(b"y" * 10000)
+        import time as t
+
+        old_time = t.time() - 7 * 24 * 3600
+        new_time = t.time()
+        os.utime(str(sub / "old.txt"), (old_time, old_time))
+        os.utime(str(sub / "new.txt"), (new_time, new_time))
+        os.utime(str(sub), (old_time, old_time))
+        result = _collect_old_entries(str(old_root), max_age_days=3, max_targets=300)
+        dir_targets = [entry for entry in result["targets"] if os.path.isdir(entry["path"])]
+        self.assertEqual(len(dir_targets), 1)
+        self.assertEqual(dir_targets[0]["size"], 5000)
 
 
 class TestFormatBytesEdgeCases(unittest.TestCase):

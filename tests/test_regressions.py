@@ -9,7 +9,7 @@ from unittest import mock
 
 from cclear.app import format_bytes
 from cclear.cache_store import get_snapshot_path, load_snapshot, save_snapshot
-from cclear.services import _collect_old_entries, build_risk_level, extension_label, normalize_path, search_files
+from cclear.services import _collect_old_entries, build_risk_level, extension_label, is_path_inside, normalize_path, search_files
 
 
 class RegressionTests(unittest.TestCase):
@@ -39,6 +39,35 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(result["size"], 3000)
             self.assertEqual(targets["old.txt"], 1000)
             self.assertEqual(targets["subdir"], 2000)
+
+    def test_collect_old_entries_excludes_new_files_from_directory_size(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            old_dir = root_path / "subdir"
+            old_dir.mkdir()
+            old_file = old_dir / "old.txt"
+            new_file = old_dir / "new.txt"
+            old_file.write_bytes(b"a" * 5000)
+            new_file.write_bytes(b"b" * 10000)
+
+            old_timestamp = time.time() - 7 * 24 * 60 * 60
+            new_timestamp = time.time()
+            os.utime(old_file, (old_timestamp, old_timestamp))
+            os.utime(new_file, (new_timestamp, new_timestamp))
+            os.utime(old_dir, (old_timestamp, old_timestamp))
+
+            result = _collect_old_entries(str(root_path), max_age_days=3)
+            targets = {item["name"]: item["size"] for item in result["targets"]}
+
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["size"], 5000)
+            self.assertEqual(targets["subdir"], 5000)
+
+    def test_is_path_inside_accepts_drive_root_parent(self) -> None:
+        drive_root = os.environ.get("SystemDrive", "C:") + "\\"
+        self.assertTrue(is_path_inside(drive_root, drive_root))
+        self.assertTrue(is_path_inside(drive_root + "Users", drive_root))
+        self.assertTrue(is_path_inside(drive_root + "Windows", drive_root))
 
     def test_extension_label_preserves_dotfile_name(self) -> None:
         self.assertEqual(extension_label(".gitignore"), ".gitignore")
