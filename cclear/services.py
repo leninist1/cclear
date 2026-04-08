@@ -4,6 +4,7 @@ import ctypes
 import os
 import pathlib
 import time
+import uuid
 from ctypes import wintypes
 from datetime import datetime
 from typing import Callable
@@ -41,10 +42,26 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
     ]
 
 
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    @classmethod
+    def from_uuid_string(cls, value: str) -> "GUID":
+        guid = cls()
+        ctypes.memmove(ctypes.byref(guid), uuid.UUID(value).bytes_le, ctypes.sizeof(guid))
+        return guid
+
+
 def normalize_path(target_path: str) -> str:
-    normalized = os.path.abspath(target_path)
-    normalized = os.path.normpath(normalized)
-    return os.path.normcase(normalized.rstrip("\\/"))
+    normalized = os.path.normcase(os.path.normpath(os.path.abspath(target_path)))
+    if os.path.dirname(normalized) == normalized:
+        return normalized
+    return normalized.rstrip("\\/")
 
 
 def is_path_inside(target_path: str, parent_path: str) -> bool:
@@ -73,7 +90,7 @@ def build_risk_level(target_path: str) -> str:
         return "高风险"
 
     temp_path = normalize_path(pathlib.Path(os.environ.get("TEMP", pathlib.Path.home())).as_posix())
-    downloads_path = normalize_path(str(pathlib.Path.home() / "Downloads"))
+    downloads_path = normalize_path(get_downloads_path())
     target = normalize_path(target_path)
 
     if is_path_inside(target, temp_path):
@@ -86,12 +103,36 @@ def build_risk_level(target_path: str) -> str:
 
 
 def extension_label(file_path: str) -> str:
-    extension = pathlib.Path(file_path).suffix.lower()
-    return extension or "(无扩展名)"
+    path = pathlib.Path(file_path)
+    extension = path.suffix.lower()
+    if extension:
+        return extension
+
+    name = path.name.lower()
+    if name.startswith(".") and len(name) > 1:
+        return name
+
+    return "(无扩展名)"
 
 
 def get_path_depth(target_path: str) -> int:
     return len(pathlib.Path(os.path.abspath(target_path)).parts)
+
+
+def get_downloads_path() -> str:
+    fallback = str(pathlib.Path.home() / "Downloads")
+    try:
+        folder_id = GUID.from_uuid_string("374DE290-123F-4565-9164-39C4925E467B")
+        path_pointer = ctypes.c_void_p()
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(path_pointer))
+        if result != 0 or not path_pointer.value:
+            return fallback
+        try:
+            return ctypes.wstring_at(path_pointer.value)
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(ctypes.c_void_p(path_pointer.value))
+    except (AttributeError, OSError, ValueError):
+        return fallback
 
 
 def push_top_item(items: list[dict], item: dict, limit: int) -> None:
@@ -169,6 +210,36 @@ def _build_file_record(full_path: str, stat_result: os.stat_result) -> dict:
         "modified_at": _to_iso(stat_result.st_mtime),
         "risk": build_risk_level(full_path),
     }
+
+
+def _measure_directory_size(root_path: str) -> int:
+    total_size = 0
+    stack = [root_path]
+
+    while stack:
+        current_directory = stack.pop()
+        try:
+            entries = list(os.scandir(current_directory))
+        except OSError:
+            continue
+
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                    continue
+
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+
+                total_size += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+
+    return total_size
 
 
 def _scan_directory_live(
@@ -423,6 +494,8 @@ def search_files(
     root = os.path.abspath(root_path)
     if not os.path.isdir(root):
         raise ValueError("请选择有效的目录或磁盘根路径")
+    if min_size_bytes < 0:
+        raise ValueError("最小大小不能为负数")
 
     normalized_query = query.strip().lower()
     report_progress = ProgressReporter(progress_callback, "search", root)
@@ -580,7 +653,24 @@ def _collect_old_entries(root_path: str, max_age_days: int = 3, max_targets: int
                 continue
 
             if entry.is_dir(follow_symlinks=False):
-                stack.append(full_path)
+                if stat.st_mtime > cutoff:
+                    stack.append(full_path)
+                    continue
+
+                size = _measure_directory_size(full_path)
+                targets.append(
+                    {
+                        "path": full_path,
+                        "name": os.path.basename(full_path),
+                        "size": size,
+                        "modified_at": _to_iso(stat.st_mtime),
+                        "risk": build_risk_level(full_path),
+                    }
+                )
+                total_size += size
+                if len(targets) >= max_targets:
+                    break
+                continue
 
             if stat.st_mtime > cutoff:
                 continue
@@ -662,7 +752,7 @@ def analyze_cleanup(
 ) -> dict:
     user_temp_path = os.environ.get("TEMP", str(pathlib.Path.home()))
     windows_temp_path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
-    downloads_path = str(pathlib.Path.home() / "Downloads")
+    downloads_path = get_downloads_path()
 
     user_temp = _collect_old_entries(user_temp_path, max_age_days=max_age_days, max_targets=300)
     windows_temp = _collect_old_entries(windows_temp_path, max_age_days=max_age_days, max_targets=200)

@@ -19,7 +19,7 @@ from .services import (
 
 
 def format_bytes(value: int) -> str:
-    size = float(value or 0)
+    size = max(float(value or 0), 0.0)
     if size < 1024:
         return f"{int(size)} B"
 
@@ -442,6 +442,9 @@ class CClearApp(tk.Tk):
             min_size_bytes = int(float(self.search_min_size_var.get() or "0") * 1024 * 1024)
         except ValueError:
             messagebox.showwarning("CClear", "最小大小必须是数字。")
+            return
+        if min_size_bytes < 0:
+            messagebox.showwarning("CClear", "最小大小不能为负数。")
             return
 
         self._start_background_task(
