@@ -167,8 +167,8 @@ class TestExtensionLabel(unittest.TestCase):
     def test_no_extension(self):
         self.assertEqual(extension_label("README"), "(无扩展名)")
 
-    def test_dotfile_returns_no_extension(self):
-        self.assertEqual(extension_label(".gitignore"), "(无扩展名)")
+    def test_dotfile_extension_now_preserved(self):
+        self.assertEqual(extension_label(".gitignore"), ".gitignore")
 
     def test_double_extension(self):
         self.assertEqual(extension_label("archive.tar.gz"), ".gz")
@@ -1147,14 +1147,12 @@ class TestCollectOldEntriesDirectorySizeBug(unittest.TestCase, SafeTestDirMixin)
         os.utime(str(sub), (old_time, old_time))
         result = _collect_old_entries(str(old_root), max_age_days=3, max_targets=300)
         dir_targets = [t for t in result["targets"] if os.path.isdir(t["path"])]
-        if dir_targets:
-            for dt in dir_targets:
-                self.assertEqual(
-                    dt["size"],
-                    0,
-                    f"BUG: Directory '{dt['name']}' reports size {dt['size']} but contains files totaling more. "
-                    f"The directory entry size should include content size for accurate reclaim estimation.",
-                )
+        for dt in dir_targets:
+            self.assertGreater(
+                dt["size"],
+                0,
+                f"Directory '{dt['name']}' should have recursive size > 0 after fix",
+            )
 
 
 class TestFormatBytesEdgeCases(unittest.TestCase):
@@ -1162,7 +1160,7 @@ class TestFormatBytesEdgeCases(unittest.TestCase):
         from cclear.app import format_bytes
 
         result = format_bytes(-1)
-        self.assertIn("-", result)
+        self.assertEqual(result, "0 B")
 
     def test_very_large_bytes(self):
         from cclear.app import format_bytes
@@ -1194,9 +1192,9 @@ class TestSearchNegativeMinSize(unittest.TestCase, SafeTestDirMixin):
             os.environ["CCLEAR_DATA_DIR"] = self._prev
         self.safe_cleanup()
 
-    def test_negative_min_size_returns_all_files(self):
-        result = search_files(str(self.root), "txt", min_size_bytes=-100)
-        self.assertGreaterEqual(len(result["results"]), 1)
+    def test_negative_min_size_raises_valueerror(self):
+        with self.assertRaisesRegex(ValueError, "最小大小不能为负数"):
+            search_files(str(self.root), "txt", min_size_bytes=-100, prefer_index=False)
 
 
 class TestDotfileExtensionBug(unittest.TestCase):
