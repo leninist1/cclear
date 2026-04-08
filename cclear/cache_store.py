@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -63,7 +64,18 @@ def save_snapshot(root_path: str, payload: dict) -> str:
         "version": CLEAR_CACHE_VERSION,
         **payload,
     }
-    snapshot_path.write_text(json.dumps(snapshot_content, ensure_ascii=False), encoding="utf-8")
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f"{snapshot_path.stem}-",
+        suffix=".tmp",
+        dir=snapshot_path.parent,
+    )
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
+            json.dump(snapshot_content, temp_file, ensure_ascii=False)
+        os.replace(temp_name, snapshot_path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
     return str(snapshot_path)
 
 
