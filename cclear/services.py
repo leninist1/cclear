@@ -67,7 +67,10 @@ def normalize_path(target_path: str) -> str:
 def is_path_inside(target_path: str, parent_path: str) -> bool:
     target = normalize_path(target_path)
     parent = normalize_path(parent_path)
-    return target == parent or target.startswith(parent + os.sep)
+    if target == parent:
+        return True
+    parent_prefix = parent if parent.endswith(os.sep) else parent + os.sep
+    return target.startswith(parent_prefix)
 
 
 def get_protected_paths() -> list[str]:
@@ -212,7 +215,7 @@ def _build_file_record(full_path: str, stat_result: os.stat_result) -> dict:
     }
 
 
-def _measure_directory_size(root_path: str) -> int:
+def _measure_directory_size(root_path: str, cutoff: float | None = None) -> int:
     total_size = 0
     stack = [root_path]
 
@@ -235,7 +238,11 @@ def _measure_directory_size(root_path: str) -> int:
                 if not entry.is_file(follow_symlinks=False):
                     continue
 
-                total_size += entry.stat(follow_symlinks=False).st_size
+                stat_result = entry.stat(follow_symlinks=False)
+                if cutoff is not None and stat_result.st_mtime > cutoff:
+                    continue
+
+                total_size += stat_result.st_size
             except OSError:
                 continue
 
@@ -657,7 +664,7 @@ def _collect_old_entries(root_path: str, max_age_days: int = 3, max_targets: int
                     stack.append(full_path)
                     continue
 
-                size = _measure_directory_size(full_path)
+                size = _measure_directory_size(full_path, cutoff=cutoff)
                 targets.append(
                     {
                         "path": full_path,
